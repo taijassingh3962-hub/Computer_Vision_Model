@@ -51,7 +51,7 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=0.001)
 
     # 448x448 Resolution test
-    dummy_xrays = torch.randn(TEST_BATCH_SIZE, 3, 900, 900).to(device)
+    dummy_xrays = torch.randn(TEST_BATCH_SIZE, 3, 850, 850).to(device)
     dummy_targets = torch.randint(0, 3, (TEST_BATCH_SIZE,)).to(device)
     
     print_vram_usage("After Data Loading")
