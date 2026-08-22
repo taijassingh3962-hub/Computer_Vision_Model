@@ -65,11 +65,57 @@ The reduced memory footprint allowed a larger training batch size, resulting in 
 **Room for the LLM:**
 The freed VRAM creates the computational headroom required for the next stage: running an **Agentic LLM** alongside the vision engine to generate preliminary clinical reports using DenseNet's Grad-CAM outputs.
 
+### 🟣 Phase 5: The Dual-CNN Fusion Experiment — DenseNet-121 + EfficientNet-B1
+
+**Status:** Experimental
+
+**The Approach:**
+Designing a **Feature Fusion** architecture by combining DenseNet-121 and EfficientNet-B1. The final layers extract features from both backbones:
+
+* DenseNet-121: **1024 features**
+* EfficientNet-B1: **1280 features**
+* Combined feature vector: **2304 features**
+
+These features are concatenated and passed through a custom 3-class classifier with a `Dropout(0.3)` layer.
+
+**The Hypothesis:**
+Since the ViT proved too data-hungry for the ~5,000-image dataset, this dual-CNN architecture aims to combine complementary feature representations without the parameter overhead of a large Transformer.
+
+* **DenseNet-121 — "The Detailer":** Preserves fine-grained, low-level features and micro-opacities through its dense connectivity pattern.
+* **EfficientNet-B1 — "The Scaler":** Provides efficient multi-scale feature extraction and captures broader structural patterns within the lungs.
+* **Feature Fusion:** Combining both representations may provide a richer feature space while keeping the overall architecture substantially smaller than the ViT-based approach.
+
+The combined architecture contains approximately **16M parameters**, compared with approximately **86M parameters** for the ViT configuration, potentially reducing overfitting risk on the relatively small clinical dataset.
+
+**The Engineering Challenge:**
+Running two independent CNN backbones simultaneously on high-resolution **850×850** X-rays creates substantially larger activation-memory requirements. This poses a significant challenge under the strict **6GB VRAM** constraint.
+
+**The Mitigation Strategy:**
+To prevent CUDA Out-of-Memory (OOM) errors during the fusion experiment, two memory-efficiency techniques are being introduced:
+
+* **Mixed Precision Training (AMP):** Uses lower-precision computation where appropriate to substantially reduce activation and gradient memory consumption.
+* **Gradient Accumulation:** Accumulates gradients across multiple smaller micro-batches, allowing the model to achieve a larger **effective batch size** without requiring the entire batch to reside in VRAM simultaneously.
+
+### 🔬 Research Objective
+
+This experiment tests whether **architectural diversity between two lightweight CNNs** can provide better clinical feature representation than a single DenseNet-121, while remaining feasible on edge hardware.
+
+The experiment will ultimately be evaluated against the current **Pure DenseNet-121 baseline** using metrics such as:
+
+* Weighted F1-Score
+* Per-class F1-Score
+* Validation loss
+* Generalization gap
+* VRAM consumption
+* Training throughput
+
+If the fusion model improves predictive performance without violating the 6GB VRAM constraint or introducing significant overfitting, it can become the new candidate vision engine for the downstream **Grad-CAM → Agentic LLM → Human-in-the-Loop CDSS** pipeline.
+
 ## 🔬 Research Direction
 
 The architectural evolution ultimately moved from:
 
-**ResNet → ResNet + ViT → DenseNet + ViT → Pure DenseNet-121**
+**ResNet → ResNet + ViT → DenseNet + ViT → Pure DenseNet-121 → Ensemble(DenseNet + EffecientNet)**
 
 The key research decision was not to use the most complex architecture possible, but to identify the architecture that provides the best balance between:
 
