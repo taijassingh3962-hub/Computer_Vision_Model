@@ -14,6 +14,7 @@ import numpy as np
 import os
 import pandas as pd
 import matplotlib.cm as cm
+import gc
 
 # =====================================================================
 #                        STREAMLIT UI CONFIG
@@ -93,11 +94,14 @@ class GradCAM:
         if cam.max() > 0:
             cam = cam / cam.max()
             
-        return cam, predicted_class
+        return cam, predicted_class, output.detach()
 
     def remove(self):
         self.fwd_hook.remove()
         self.bwd_hook.remove()
+        self.activations = None
+        self.gradients = None
+        gc.collect()
 
 def get_anatomical_location(heatmap):
     """Translates the hottest region of the heatmap into text coordinates."""
@@ -137,7 +141,6 @@ def get_anatomical_location(heatmap):
 # =====================================================================
 #                     CACHED RAG DATABASE
 # =====================================================================
-@st.cache_resource
 def load_rag_db():
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     db = Chroma(persist_directory="./main_folder/chroma_db", embedding_function=embeddings)
@@ -228,23 +231,17 @@ if uploaded_file is not None:
             gradcam_dense = GradCAM(model_dense, model_dense.features.denseblock4)
             gradcam_effnet = GradCAM(model_effnet, model_effnet.features[-1])
 
-            cam_dense, pred_d_idx = gradcam_dense.generate(input_tensor.clone())
-            cam_effnet, pred_e_idx = gradcam_effnet.generate(input_tensor.clone())
+            cam_dense, pred_d_idx, out_dense = gradcam_dense.generate(input_tensor)
+            cam_effnet, pred_e_idx, out_effnet = gradcam_effnet.generate(input_tensor)
             
             gradcam_dense.remove()
             gradcam_effnet.remove()
+            
+            del gradcam_dense, gradcam_effnet, input_tensor
+            gc.collect()
 
-            with torch.no_grad():
-                if device.type == 'cuda':
-                    with torch.amp.autocast('cuda'):
-                        out_dense = model_dense(input_tensor)
-                        out_effnet = model_effnet(input_tensor)
-                else:
-                    out_dense = model_dense(input_tensor)
-                    out_effnet = model_effnet(input_tensor)
-
-                probs_d = torch.softmax(out_dense, dim=1).cpu().numpy()[0]
-                probs_e = torch.softmax(out_effnet, dim=1).cpu().numpy()[0]
+            probs_d = torch.softmax(out_dense, dim=1).cpu().numpy()[0]
+            probs_e = torch.softmax(out_effnet, dim=1).cpu().numpy()[0]
 
             avg_probs = (probs_d + probs_e) / 2.0
             predicted_idx = np.argmax(avg_probs)
@@ -341,6 +338,10 @@ Format the output clearly using Markdown. Be concise and clinical. Do not halluc
                         response = model.generate_content(prompt)
                         
                         st.session_state['agent_report'] = response.text
+                        
+                        # Free RAG models from RAM
+                        del db, docs, context
+                        gc.collect()
                     except Exception as e:
                         st.error(f"Agentic Engine Error: {e}")
 
