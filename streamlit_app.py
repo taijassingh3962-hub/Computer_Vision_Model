@@ -140,7 +140,7 @@ def get_anatomical_location(heatmap):
 @st.cache_resource
 def load_rag_db():
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    db = Chroma(persist_directory="./main_model/chroma_db", embedding_function=embeddings)
+    db = Chroma(persist_directory="./main_folder/chroma_db", embedding_function=embeddings)
     return db
 
 # =====================================================================
@@ -149,7 +149,7 @@ def load_rag_db():
 
 @st.cache_resource
 def load_ensemble():
-    weights_dir = 'main_model/weights'
+    weights_dir = 'main_folder/weights'
     metadata_path = os.path.join(weights_dir, 'ensemble_metadata.json')
     dense_path = os.path.join(weights_dir, 'best_densenet121.pth')
     effnet_path = os.path.join(weights_dir, 'best_efficientnet_b4.pth')
