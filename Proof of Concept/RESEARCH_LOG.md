@@ -1,4 +1,4 @@
-# 🧠 Architecture Evolution & Research Log
+# Architecture Evolution & Research Log
 
 **Project:** Edge-Optimized Pneumonia CDSS (Clinical Decision Support System)
 **Constraint:** Strict ≤ 6GB VRAM Environment
@@ -6,18 +6,18 @@
 
 This document tracks the R&D thought process, architectural pivots, and engineering decisions made to optimize the vision engine for clinical accuracy and edge-hardware deployment.
 
-## 🔴 Phase 1: The Baseline — Pure ResNet
+## Phase 1: The Baseline — Pure ResNet
 
 **The Approach:**
 Started with a standard pre-trained ResNet as a baseline feature extractor.
 
 **The Problem:**
-While ResNet is effective for general visual feature extraction, it suffered from **feature washout** in deeper layers. It struggled to retain the fine-grained micro-opacities crucial for detecting early-stage pneumonia.
+While ResNet is effective for general visual feature extraction, it suffered from **feature washout** (only allows skip connection via Addition) in deeper layers. It struggled to retain the fine-grained micro-opacities crucial for detecting early-stage pneumonia.
 
 **The Pivot:**
 Realized the model needed **global context** to understand relationships between different regions of the lungs.
 
-## 🟡 Phase 2: The Global Context — ResNet + ViT-16
+## Phase 2: The Global Context — ResNet + ViT-16
 
 **The Approach:**
 Integrated a Vision Transformer (ViT) on top of the CNN backbone to capture long-range dependencies across the X-ray.
@@ -28,10 +28,10 @@ ViT-16 generated too many tokens, immediately causing **CUDA Out-Of-Memory (OOM)
 **The Pivot:**
 A mathematical method was needed to strictly control token generation, along with a better CNN backbone capable of preserving low-level medical features.
 
-## 🔵 Phase 3: Hardware Math & Preservation — DenseNet-121 + ViT
+## Phase 3: Hardware Math & Preservation — DenseNet-121 + ViT
 
 **The Approach:**
-Replaced ResNet with **DenseNet-121**. DenseNet's dense connections provided better preservation of fine-grained features. The downsampling grid was mathematically tuned to generate exactly **196 tokens**, and later **900 tokens**, while remaining within the VRAM constraint.
+Replaced ResNet with **DenseNet-121**. DenseNet's dense connections provided better preservation of fine-grained features(Uses Skip Connection via Concatenation). The downsampling grid was mathematically tuned to generate exactly **196 tokens**, and later **900 tokens**, while remaining within the VRAM constraint.
 
 **The Problem:**
 Empirical testing revealed a critical flaw: Transformers are highly data-hungry. With a limited dataset of approximately 5,000 images, the ViT component was prone to overfitting.
@@ -41,7 +41,7 @@ Additionally, the ViT consumed approximately **99% of the available GPU memory**
 **The Pivot:**
 Decided to remove the Transformer entirely to reduce overfitting risk, increase batch size, and free computational resources for the final CDSS pipeline.
 
-## 🟢 Phase 4: The Specialist Model — Pure DenseNet-121
+## Phase 4: The Specialist Model — Pure DenseNet-121
 
 **Status:** Current
 
@@ -54,7 +54,7 @@ Pivoted to a purely optimized **DenseNet-121** with a custom 3-class classifier 
 
 Added a **Dropout(0.3)** layer to reduce overfitting on the relatively small dataset.
 
-### 🏆 The Engineering Win
+### The Engineering Win
 
 **VRAM Monopoly:**
 Removing the ViT significantly reduced VRAM consumption. This allowed the input resolution to be increased to an extreme **850×850**, enabling the model to retain finer clinical details.
@@ -65,9 +65,9 @@ The reduced memory footprint allowed a larger training batch size, resulting in 
 **Room for the LLM:**
 The freed VRAM creates the computational headroom required for the next stage: running an **Agentic LLM** alongside the vision engine to generate preliminary clinical reports using DenseNet's Grad-CAM outputs.
 
-### 🟣 Phase 5: The Dual-CNN Fusion Experiment — DenseNet-121 + EfficientNet-B1
+### Phase 5: The Dual-CNN Fusion Experiment — DenseNet-121 + EfficientNet-B1
 
-**Status:** Experimental
+**Status:** Prototype Workflow Completed 
 
 **The Approach:**
 Designing a **Feature Fusion** architecture by combining DenseNet-121 and EfficientNet-B1. The final layers extract features from both backbones:
@@ -94,9 +94,9 @@ Running two independent CNN backbones simultaneously on high-resolution **850×8
 To prevent CUDA Out-of-Memory (OOM) errors during the fusion experiment, two memory-efficiency techniques are being introduced:
 
 * **Mixed Precision Training (AMP):** Uses lower-precision computation where appropriate to substantially reduce activation and gradient memory consumption.
-* **Gradient Accumulation:** Accumulates gradients across multiple smaller micro-batches, allowing the model to achieve a larger **effective batch size** without requiring the entire batch to reside in VRAM simultaneously.
+* **Gradient Accumulation:** Accumulates gradients across multiple smaller micro-batches, allowing the model to achieve a larger **effective batch size** without requiring the entire batch to reside in VRAM simultaneously.(Optional)
 
-### 🔬 Research Objective
+### Research Objective
 
 This experiment tests whether **architectural diversity between two lightweight CNNs** can provide better clinical feature representation than a single DenseNet-121, while remaining feasible on edge hardware.
 
@@ -111,7 +111,7 @@ The experiment will ultimately be evaluated against the current **Pure DenseNet-
 
 If the fusion model improves predictive performance without violating the 6GB VRAM constraint or introducing significant overfitting, it can become the new candidate vision engine for the downstream **Grad-CAM → Agentic LLM → Human-in-the-Loop CDSS** pipeline.
 
-## 🔬 Research Direction
+## Research Direction
 
 The architectural evolution ultimately moved from:
 
@@ -125,5 +125,3 @@ The key research decision was not to use the most complex architecture possible,
 * Training stability
 * High-resolution input capability
 * Compatibility with the downstream Agentic AI pipeline
-
-This makes **Pure DenseNet-121** the current specialist vision engine for the Edge-Optimized Pneumonia CDSS.
