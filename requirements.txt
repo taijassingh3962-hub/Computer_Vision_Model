@@ -11,3 +11,4 @@ sentence-transformers
 langchain
 langchain-community
 google-generativeai
+matplotlib
