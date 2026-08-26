@@ -150,45 +150,22 @@ def load_rag_db():
 #                     CACHED MODEL LOADING
 # =====================================================================
 
-@st.cache_resource
-def load_ensemble():
+@st.cache_data
+def get_model_config():
     weights_dir = 'main_folder/weights'
     metadata_path = os.path.join(weights_dir, 'ensemble_metadata.json')
-    dense_path = os.path.join(weights_dir, 'best_densenet121.pth')
-    effnet_path = os.path.join(weights_dir, 'best_efficientnet_b4.pth')
-
     if not os.path.exists(metadata_path):
-        return None, None, None, [], f"Missing {metadata_path}! Please run the training script first."
-
+        return None, None
     with open(metadata_path, 'r') as f:
         meta = json.load(f)
-    
     cfg = meta['config']
-    num_classes = cfg['num_classes']
-    dropout_rate = cfg['dropout_rate']
-    input_size = cfg['input_size']
-    class_names = cfg['class_names']
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    try:
-        model_dense = get_densenet121(num_classes=num_classes, dropout_rate=dropout_rate).to(device)
-        model_dense.load_state_dict(torch.load(dense_path, map_location=device, weights_only=True)['model_state_dict'])
-        model_dense.eval()
-
-        model_effnet = get_efficientnet_b4(num_classes=num_classes, dropout_rate=dropout_rate).to(device)
-        model_effnet.load_state_dict(torch.load(effnet_path, map_location=device, weights_only=True)['model_state_dict'])
-        model_effnet.eval()
-    except Exception as e:
-        return None, None, None, [], f"Error loading weights: {e}"
-
+    
     transform = transforms.Compose([
-        transforms.Resize((input_size, input_size)),
+        transforms.Resize((cfg['input_size'], cfg['input_size'])),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-
-    return model_dense, model_effnet, transform, class_names, device
+    return cfg, transform
 
 
 # =====================================================================
@@ -207,11 +184,14 @@ st.markdown("""
 Upload a chest X-ray image below to classify it as **bacterial pneumonia**, **viral pneumonia**, or **normal**.
 """)
 
-model_dense, model_effnet, transform, class_names, device = load_ensemble()
+cfg, transform = get_model_config()
 
-if model_dense is None:
-    st.error(f"**Error Loading Models:**\n{device}")
+if cfg is None:
+    st.error("**Error Loading Models:** Missing metadata!")
     st.stop()
+    
+class_names = cfg['class_names']
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 uploaded_file = st.file_uploader("Choose an X-ray image...", type=["jpg", "jpeg", "png"])
 
@@ -224,24 +204,36 @@ if uploaded_file is not None:
     st.markdown("---")
     
     if st.button("🔍 Run Classification & Grad-CAM", type="primary", use_container_width=True):
-        with st.spinner("Analyzing image and extracting spatial features..."):
+        with st.spinner("Analyzing image using sequential memory-optimized inference..."):
             
             input_tensor = transform(image).unsqueeze(0).to(device)
+            weights_dir = 'main_folder/weights'
 
+            # 1. DENSENET INFERENCE
+            model_dense = get_densenet121(num_classes=cfg['num_classes'], dropout_rate=cfg['dropout_rate']).to(device)
+            model_dense.load_state_dict(torch.load(os.path.join(weights_dir, 'best_densenet121.pth'), map_location=device, weights_only=True)['model_state_dict'])
+            model_dense.eval()
+            
             gradcam_dense = GradCAM(model_dense, model_dense.features.denseblock4)
-            gradcam_effnet = GradCAM(model_effnet, model_effnet.features[-1])
-
             cam_dense, pred_d_idx, out_dense = gradcam_dense.generate(input_tensor)
-            cam_effnet, pred_e_idx, out_effnet = gradcam_effnet.generate(input_tensor)
-            
             gradcam_dense.remove()
-            gradcam_effnet.remove()
+            probs_d = torch.softmax(out_dense, dim=1).cpu().numpy()[0]
             
-            del gradcam_dense, gradcam_effnet, input_tensor
+            del model_dense, gradcam_dense, out_dense
             gc.collect()
 
-            probs_d = torch.softmax(out_dense, dim=1).cpu().numpy()[0]
+            # 2. EFFICIENTNET INFERENCE
+            model_effnet = get_efficientnet_b4(num_classes=cfg['num_classes'], dropout_rate=cfg['dropout_rate']).to(device)
+            model_effnet.load_state_dict(torch.load(os.path.join(weights_dir, 'best_efficientnet_b4.pth'), map_location=device, weights_only=True)['model_state_dict'])
+            model_effnet.eval()
+            
+            gradcam_effnet = GradCAM(model_effnet, model_effnet.features[-1])
+            cam_effnet, pred_e_idx, out_effnet = gradcam_effnet.generate(input_tensor)
+            gradcam_effnet.remove()
             probs_e = torch.softmax(out_effnet, dim=1).cpu().numpy()[0]
+            
+            del model_effnet, gradcam_effnet, out_effnet, input_tensor
+            gc.collect()
 
             avg_probs = (probs_d + probs_e) / 2.0
             predicted_idx = np.argmax(avg_probs)
