@@ -510,6 +510,6 @@ It was demonstrating that **careful architectural design and training-system eng
 
 ---
 
-## 📌 Phase 6 in One Line
+## Phase 6 in One Line
 
 > **DenseNet-121 + EfficientNet-B4 + aggressive VRAM optimization + controlled fine-tuning = the final dual-CNN fusion pipeline.**
