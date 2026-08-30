@@ -121,7 +121,7 @@ The B1 backbone was replaced with the substantially larger **EfficientNet-B4**, 
 
 ---
 
-## 🧠 Final Architecture
+## Final Architecture
 
 The model combines two complementary convolutional backbones:
 
@@ -161,7 +161,7 @@ The final fused representation contains **2,816 features**, providing the classi
 
 ---
 
-# ⚔️ The Ultimate VRAM Battle
+# The Ultimate VRAM Battle
 
 Running DenseNet-121 and EfficientNet-B4 simultaneously at high resolution on a **6GB GPU** creates a severe memory bottleneck.
 
@@ -177,7 +177,7 @@ The final system combined multiple optimization strategies developed throughout 
 
 ---
 
-# 1. 🚀 VRAM Survival — AMP + Gradient Accumulation
+# 1. VRAM Survival — AMP + Gradient Accumulation
 
 The dual-backbone architecture required extremely careful memory management.
 
@@ -210,7 +210,7 @@ This allowed the model to benefit from a larger effective batch without requirin
 
 ---
 
-# 2. 🧊 Progressive Unfreezing
+# 2. Progressive Unfreezing
 
 Immediately fine-tuning both large pre-trained backbones would be unnecessarily aggressive and potentially unstable.
 
@@ -288,7 +288,7 @@ This reduced the risk of **catastrophic forgetting** during fine-tuning.
 
 ---
 
-# 4. ⚖️ Class Imbalance Without Large Batches
+# 4. Class Imbalance Without Large Batches
 
 The dataset contained an imbalance between the **Normal** class and the **Viral/Bacterial** classes.
 
@@ -326,7 +326,7 @@ This allowed the model to see minority-class examples more frequently without in
 
 ---
 
-# 5. 🎯 Focal Loss
+# 5. Focal Loss
 
 Sampling alone was not considered sufficient.
 
@@ -356,7 +356,7 @@ Combined with weighted sampling, this encouraged the model to pay greater attent
 
 ---
 
-# 🏗️ Complete Training Strategy
+# Complete Training Strategy
 
 The final Phase 6 pipeline therefore combined architectural fusion with a full optimization stack:
 
@@ -412,7 +412,7 @@ Training was supported by:
 
 ---
 
-# 🔬 Why This Architecture?
+# Why This Architecture?
 
 The motivation behind the fusion was not simply to increase parameter count.
 
@@ -434,7 +434,7 @@ The hypothesis was that combining these representations would provide a more inf
 
 ---
 
-# 💾 Hardware-Constrained Deep Learning
+# Hardware-Constrained Deep Learning
 
 One of the primary goals of Phase 6 was demonstrating that a relatively heavy architecture could still be trained under strict consumer-hardware limitations.
 
@@ -484,7 +484,7 @@ The result was not achieved through a single optimization trick, but through the
 
 ---
 
-# 🏁 Final Verdict
+# Final Verdict
 
 Phase 6 became the **endgame of the dual-CNN experimentation series**.
 
