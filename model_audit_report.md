@@ -6,21 +6,22 @@ This document explores how our AI makes its decisions. By using t-SNE to see how
 
 ## 1. Overall Performance Metrics
 
-Before looking at the visuals, here is how well the final model performed on 624 completely unseen test images:
+Here is how well the final 5-Fold Stacking Ensemble performed on 586 completely unseen test images:
 
-* **DenseNet-121 Accuracy:** 83.8%
-* **EfficientNet-B4 Accuracy:** 82.7%
-* ** Final Ensemble Accuracy:** **84.6%** (Weighted F1 Score: 84.7%)
+* **DenseNet-121 (5 Folds):** ~84% Val F1
+* **EfficientNet-B2 (5 Folds):** ~82% Val F1
+* **Final Meta-Classifier Ensemble:** **82.9% Test Accuracy** (Weighted F1 Score: **83.1%**)
+* **'Normal' Class F1:** **96.25%**
 
-The ensemble correctly fixed many mistakes made by the individual models, especially in telling the difference between Bacterial and Viral infections!
+By leveraging 10 distinct models and analyzing 456x456 high-resolution images, the Meta-Classifier almost perfectly detects healthy lungs, with only 5 false predictions out of 159 cases!
 
 ---
 
 ## 2. How the AI Groups Images (t-SNE Analysis)
 
-*(t-SNE takes the thousands of features the AI sees and squashes them down to a 2D graph so we can see what the AI is thinking.)*
+*(t-SNE takes the 6-dimensional feature space the Meta-Classifier sees and squashes them down to a 2D graph so we can visualize its decision boundary.)*
 
-![t-SNE Ensemble Features](visualizations/tsne_ensemble.png)
+![t-SNE Ensemble Features](visualizations/tsne_new_ensemble.png)
 
 **Key Observations:**
 1. **Healthy Lungs are Easy:** The model successfully groups the 'Normal' X-Rays into their own separate area. This proves the AI has learned a very strong baseline for what a healthy chest looks like.
@@ -33,7 +34,7 @@ The ensemble correctly fixed many mistakes made by the individual models, especi
 
 *(Grad-CAM generates a heatmap over the X-ray. Red/Yellow areas show exactly where the AI was looking to make its diagnosis.)*
 
-![Grad-CAM Results](visualizations/gradcam/gradcam_all_classes.png)
+![Grad-CAM Results](visualizations/gradcam/gradcam_new_ensemble.png)
 
 **Key Observations:**
 1. **Targeting the Infection (The Good):** In the majority of cases, the AI works exactly as intended. The "hot" red zones are strictly inside the lung cavities, meaning the AI is correctly finding the localized fluid and pus buildups.
