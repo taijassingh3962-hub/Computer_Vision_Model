@@ -21,7 +21,7 @@ By leveraging 10 distinct models and analyzing 456x456 high-resolution images, t
 
 *(t-SNE takes the 6-dimensional feature space the Meta-Classifier sees and squashes them down to a 2D graph so we can visualize its decision boundary.)*
 
-![t-SNE Ensemble Features](visualizations/tsne(denseNet+EffecientNet b2).png)
+![t-SNE Ensemble Features](visualizations/tsne(denseNet+EffecientNet%20b2).png)
 
 **Key Observations:**
 1. **Healthy Lungs are Easy:** The model successfully groups the 'Normal' X-Rays into their own separate area. This proves the AI has learned a very strong baseline for what a healthy chest looks like.
@@ -34,7 +34,7 @@ By leveraging 10 distinct models and analyzing 456x456 high-resolution images, t
 
 *(Grad-CAM generates a heatmap over the X-ray. Red/Yellow areas show exactly where the AI was looking to make its diagnosis.)*
 
-![Grad-CAM Results](visualizations/gradcam/gradcam(DenseNet+EffecientNet b2).png)
+![Grad-CAM Results](visualizations/gradcam/gradcam(DenseNet+EffecientNet%20b2).png)
 
 **Key Observations:**
 1. **Targeting the Infection (The Good):** In the majority of cases, the AI works exactly as intended. The "hot" red zones are strictly inside the lung cavities, meaning the AI is correctly finding the localized fluid and pus buildups.
