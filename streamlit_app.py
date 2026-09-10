@@ -4,19 +4,14 @@ os.environ["CHROMA_TELEMETRY_OPT_OUT"] = "TRUE"
 import google.generativeai as genai
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import json
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
+import torchvision.models as models
 from PIL import Image, Image as PILImage
 import numpy as np
 import pandas as pd
 import matplotlib.cm as cm
-
-# Import our robust backend functions!
-from main_ensemble_model import (
-    CONFIG, DEVICE, load_trained_models, get_val_transform
-)
 
 # =====================================================================
 #                        STREAMLIT UI CONFIG
@@ -28,6 +23,44 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="expanded"
 )
+
+# =====================================================================
+#                     MODEL ARCHITECTURE
+# =====================================================================
+# By putting these directly in the Streamlit app, we eliminate any
+# tricky GitHub import errors (ModuleNotFoundError)!
+
+def get_densenet121(num_classes=3, dropout_rate=0.3):
+    model = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
+    in_features = model.classifier.in_features
+    model.classifier = nn.Sequential(
+        nn.Dropout(dropout_rate),
+        nn.Linear(in_features, 512),
+        nn.ReLU(),
+        nn.Dropout(dropout_rate * 0.7),
+        nn.Linear(512, num_classes)
+    )
+    return model
+
+def get_efficientnet_b2(num_classes=3, dropout_rate=0.3):
+    model = models.efficientnet_b2(weights=models.EfficientNet_B2_Weights.DEFAULT)
+    in_features = model.classifier[1].in_features
+    model.classifier = nn.Sequential(
+        nn.Dropout(dropout_rate),
+        nn.Linear(in_features, 512),
+        nn.ReLU(),
+        nn.Dropout(dropout_rate * 0.7),
+        nn.Linear(512, num_classes)
+    )
+    return model
+
+class MetaClassifier(nn.Module):
+    def __init__(self, num_classes=3):
+        super().__init__()
+        self.fc = nn.Linear(6, num_classes)
+        
+    def forward(self, x):
+        return self.fc(x)
 
 # =====================================================================
 #                        GRAD-CAM & SPATIAL
@@ -75,7 +108,6 @@ class GradCAM:
         self.bwd_hook.remove()
 
 def get_anatomical_location(heatmap):
-    """Translates the hottest region of the heatmap into text coordinates."""
     threshold = 0.75
     y_coords, x_coords = np.where(heatmap > threshold)
     
@@ -86,26 +118,16 @@ def get_anatomical_location(heatmap):
     center_y = int(np.mean(y_coords))
     H, W = heatmap.shape
     
-    # Radiological Left = Image Right (X > 58%)
-    # Radiological Right = Image Left (X < 42%)
-    if center_x < int(W * 0.42):
-        side = "Patient's Right"
-    elif center_x > int(W * 0.58):
-        side = "Patient's Left"
-    else:
-        side = "Central/Mediastinal"
+    if center_x < int(W * 0.42): side = "Patient's Right"
+    elif center_x > int(W * 0.58): side = "Patient's Left"
+    else: side = "Central/Mediastinal"
         
-    if center_y < int(H * 0.5):
-        zone = "Upper Zone"
-    else:
-        zone = "Lower Zone"
+    if center_y < int(H * 0.5): zone = "Upper Zone"
+    else: zone = "Lower Zone"
         
     location = f"{side} {zone}"
-    
-    # Cardiac region check: X in [47%, 73%], Y in [52%, 88%]
     if (int(W * 0.47) <= center_x <= int(W * 0.73)) and (int(H * 0.52) <= center_y <= int(H * 0.88)):
         location += " (Cardiac / Pericardial Region)"
-        
     return location
 
 
@@ -115,7 +137,6 @@ def get_anatomical_location(heatmap):
 @st.cache_resource
 def load_rag_db():
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    # For Streamlit deployment or testing we might want to ensure the path exists
     if not os.path.exists("./main_folder/chroma_db") and os.path.exists("chroma_db"):
         db_path = "chroma_db"
     else:
@@ -130,10 +151,52 @@ def load_rag_db():
 @st.cache_resource
 def load_ensemble():
     try:
-        dense_models, effnet_models, meta_model = load_trained_models()
-        transform = get_val_transform(CONFIG['input_size'])
-        class_names = CONFIG['class_names']
-        return dense_models, effnet_models, meta_model, transform, class_names, DEVICE
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # NOTE: SET YOUR GITHUB WEIGHTS PATH HERE.
+        # Since you mentioned the weights are inside 'main/weights_456', we will
+        # explicitly look there, or fallback to the local folder.
+        if os.path.exists('main/weights_456'):
+            weights_dir = 'main/weights_456'
+        else:
+            weights_dir = 'weights_456'
+            
+        num_classes = 3
+        dropout_rate = 0.3
+        class_names = ['bacterial', 'normal', 'viral']
+        
+        dense_models, effnet_models = [], []
+        
+        # Load 5-Fold DenseNets and EfficientNets
+        for fold in range(1, 6):
+            # DenseNet
+            d_path = os.path.join(weights_dir, f'fold_{fold}_densenet121.pth')
+            m_dense = get_densenet121(num_classes, dropout_rate).to(device)
+            m_dense.load_state_dict(torch.load(d_path, map_location=device, weights_only=True)['model_state_dict'])
+            m_dense.eval()
+            dense_models.append(m_dense)
+            
+            # EfficientNet
+            e_path = os.path.join(weights_dir, f'fold_{fold}_efficientnet_b2.pth')
+            m_effnet = get_efficientnet_b2(num_classes, dropout_rate).to(device)
+            m_effnet.load_state_dict(torch.load(e_path, map_location=device, weights_only=True)['model_state_dict'])
+            m_effnet.eval()
+            effnet_models.append(m_effnet)
+
+        # Load Meta-Classifier
+        meta_path = os.path.join(weights_dir, 'best_meta_classifier.pth')
+        meta_model = MetaClassifier(num_classes).to(device)
+        meta_model.load_state_dict(torch.load(meta_path, map_location=device, weights_only=True)['model_state_dict'])
+        meta_model.eval()
+
+        transform = transforms.Compose([
+            transforms.Resize((456, 456)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+        return dense_models, effnet_models, meta_model, transform, class_names, device
+
     except Exception as e:
         return None, None, None, None, [], f"Error loading models: {e}"
 
@@ -157,7 +220,7 @@ Upload a chest X-ray image below to classify it as **bacterial pneumonia**, **vi
 dense_models, effnet_models, meta_model, transform, class_names, device = load_ensemble()
 
 if dense_models is None:
-    st.error(f"**Error Loading Models:**\n{device}")  # the 6th return val is the error string if it fails
+    st.error(f"**Error Loading Models:**\n{device}")
     st.stop()
 
 uploaded_file = st.file_uploader("Choose an X-ray image...", type=["jpg", "jpeg", "png"])
@@ -180,7 +243,7 @@ if uploaded_file is not None:
             effnet_gcs = [GradCAM(m, m.features[-1]) for m in effnet_models]
 
             with torch.no_grad():
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast('cuda') if device.type == 'cuda' else torch.autocast('cpu', enabled=False):
                     # 1. Forward Pass DenseNets
                     d_logits = [m(input_tensor) for m in dense_models]
                     d_avg = sum(d_logits) / len(d_logits)
