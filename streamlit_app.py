@@ -153,14 +153,20 @@ def load_ensemble():
     try:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # NOTE: SET YOUR GITHUB WEIGHTS PATH HERE.
-        # Since you mentioned the weights are inside 'main/weights_456', we will
-        # explicitly look there, or fallback to the local folder.
-        if os.path.exists('main/weights_456'):
-            weights_dir = 'main/weights_456'
-        else:
-            weights_dir = 'weights_456'
-            
+        # Dynamically find the weights directory depending on if it's local or on GitHub Streamlit Cloud
+        possible_paths = [
+            'main/main_folder/weights_456',  # GitHub Cloud Path
+            'main_folder/weights_456',
+            'main/weights_456',
+            'weights_456'                    # Local Windows Path
+        ]
+        
+        weights_dir = 'weights_456' # Default fallback
+        for p in possible_paths:
+            if os.path.exists(p):
+                weights_dir = p
+                break
+                
         num_classes = 3
         dropout_rate = 0.3
         class_names = ['bacterial', 'normal', 'viral']
