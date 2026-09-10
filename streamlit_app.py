@@ -8,12 +8,15 @@ import json
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-import torchvision.models as models
-from PIL import Image
+from PIL import Image, Image as PILImage
 import numpy as np
-import os
 import pandas as pd
 import matplotlib.cm as cm
+
+# Import our robust backend functions!
+from main_ensemble_model import (
+    CONFIG, DEVICE, load_trained_models, get_val_transform
+)
 
 # =====================================================================
 #                        STREAMLIT UI CONFIG
@@ -25,34 +28,6 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="expanded"
 )
-
-# =====================================================================
-#                     MODEL ARCHITECTURE & HELPERS
-# =====================================================================
-
-def get_densenet121(num_classes=3, dropout_rate=0.5):
-    model = models.densenet121()
-    in_features = model.classifier.in_features
-    model.classifier = nn.Sequential(
-        nn.Dropout(dropout_rate),
-        nn.Linear(in_features, 512),
-        nn.ReLU(),
-        nn.Dropout(dropout_rate * 0.7),
-        nn.Linear(512, num_classes)
-    )
-    return model
-
-def get_efficientnet_b4(num_classes=3, dropout_rate=0.5):
-    model = models.efficientnet_b4()
-    in_features = model.classifier[1].in_features
-    model.classifier = nn.Sequential(
-        nn.Dropout(dropout_rate),
-        nn.Linear(in_features, 512),
-        nn.ReLU(),
-        nn.Dropout(dropout_rate * 0.7),
-        nn.Linear(512, num_classes)
-    )
-    return model
 
 # =====================================================================
 #                        GRAD-CAM & SPATIAL
@@ -140,7 +115,12 @@ def get_anatomical_location(heatmap):
 @st.cache_resource
 def load_rag_db():
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    db = Chroma(persist_directory="./main_folder/chroma_db", embedding_function=embeddings)
+    # For Streamlit deployment or testing we might want to ensure the path exists
+    if not os.path.exists("./main_folder/chroma_db") and os.path.exists("chroma_db"):
+        db_path = "chroma_db"
+    else:
+        db_path = "./main_folder/chroma_db"
+    db = Chroma(persist_directory=db_path, embedding_function=embeddings)
     return db
 
 # =====================================================================
@@ -149,43 +129,13 @@ def load_rag_db():
 
 @st.cache_resource
 def load_ensemble():
-    weights_dir = 'main_folder/weights'
-    metadata_path = os.path.join(weights_dir, 'ensemble_metadata.json')
-    dense_path = os.path.join(weights_dir, 'best_densenet121.pth')
-    effnet_path = os.path.join(weights_dir, 'best_efficientnet_b4.pth')
-
-    if not os.path.exists(metadata_path):
-        return None, None, None, [], f"Missing {metadata_path}! Please run the training script first."
-
-    with open(metadata_path, 'r') as f:
-        meta = json.load(f)
-    
-    cfg = meta['config']
-    num_classes = cfg['num_classes']
-    dropout_rate = cfg['dropout_rate']
-    input_size = cfg['input_size']
-    class_names = cfg['class_names']
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
     try:
-        model_dense = get_densenet121(num_classes=num_classes, dropout_rate=dropout_rate).to(device)
-        model_dense.load_state_dict(torch.load(dense_path, map_location=device, weights_only=True)['model_state_dict'])
-        model_dense.eval()
-
-        model_effnet = get_efficientnet_b4(num_classes=num_classes, dropout_rate=dropout_rate).to(device)
-        model_effnet.load_state_dict(torch.load(effnet_path, map_location=device, weights_only=True)['model_state_dict'])
-        model_effnet.eval()
+        dense_models, effnet_models, meta_model = load_trained_models()
+        transform = get_val_transform(CONFIG['input_size'])
+        class_names = CONFIG['class_names']
+        return dense_models, effnet_models, meta_model, transform, class_names, DEVICE
     except Exception as e:
-        return None, None, None, [], f"Error loading weights: {e}"
-
-    transform = transforms.Compose([
-        transforms.Resize((input_size, input_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-
-    return model_dense, model_effnet, transform, class_names, device
+        return None, None, None, None, [], f"Error loading models: {e}"
 
 
 # =====================================================================
@@ -200,14 +150,14 @@ if api_key:
 
 st.title("🫁 Pneumonia X-Ray Classifier")
 st.markdown("""
-**Ensemble Model:** DenseNet-121 + EfficientNet-B4  
+**Ensemble Model:** 5-Fold Stacking Ensemble (DenseNet-121 + EfficientNet-B2)  
 Upload a chest X-ray image below to classify it as **bacterial pneumonia**, **viral pneumonia**, or **normal**.
 """)
 
-model_dense, model_effnet, transform, class_names, device = load_ensemble()
+dense_models, effnet_models, meta_model, transform, class_names, device = load_ensemble()
 
-if model_dense is None:
-    st.error(f"**Error Loading Models:**\n{device}")
+if dense_models is None:
+    st.error(f"**Error Loading Models:**\n{device}")  # the 6th return val is the error string if it fails
     st.stop()
 
 uploaded_file = st.file_uploader("Choose an X-ray image...", type=["jpg", "jpeg", "png"])
@@ -220,46 +170,62 @@ if uploaded_file is not None:
     st.image(image, caption="Uploaded X-Ray", use_container_width=True)
     st.markdown("---")
     
-    if st.button("🔍 Run Classification & Grad-CAM", type="primary", use_container_width=True):
-        with st.spinner("Analyzing image and extracting spatial features..."):
+    if st.button("🔍 Run Classification & 10-Fold Grad-CAM", type="primary", use_container_width=True):
+        with st.spinner("Analyzing image across 10 models and extracting spatial features..."):
             
             input_tensor = transform(image).unsqueeze(0).to(device)
 
-            gradcam_dense = GradCAM(model_dense, model_dense.features.denseblock4)
-            gradcam_effnet = GradCAM(model_effnet, model_effnet.features[-1])
-
-            cam_dense, pred_d_idx = gradcam_dense.generate(input_tensor.clone())
-            cam_effnet, pred_e_idx = gradcam_effnet.generate(input_tensor.clone())
-            
-            gradcam_dense.remove()
-            gradcam_effnet.remove()
+            # Setup GradCAM for all 10 models
+            dense_gcs = [GradCAM(m, m.features.denseblock4) for m in dense_models]
+            effnet_gcs = [GradCAM(m, m.features[-1]) for m in effnet_models]
 
             with torch.no_grad():
-                if device.type == 'cuda':
-                    with torch.amp.autocast('cuda'):
-                        out_dense = model_dense(input_tensor)
-                        out_effnet = model_effnet(input_tensor)
-                else:
-                    out_dense = model_dense(input_tensor)
-                    out_effnet = model_effnet(input_tensor)
-
-                probs_d = torch.softmax(out_dense, dim=1).cpu().numpy()[0]
-                probs_e = torch.softmax(out_effnet, dim=1).cpu().numpy()[0]
-
-            avg_probs = (probs_d + probs_e) / 2.0
-            predicted_idx = np.argmax(avg_probs)
+                with torch.amp.autocast('cuda'):
+                    # 1. Forward Pass DenseNets
+                    d_logits = [m(input_tensor) for m in dense_models]
+                    d_avg = sum(d_logits) / len(d_logits)
+                    
+                    # 2. Forward Pass EfficientNets
+                    e_logits = [m(input_tensor) for m in effnet_models]
+                    e_avg = sum(e_logits) / len(e_logits)
+                    
+                    # 3. Meta-Classifier Final Decision
+                    combined_logits = torch.cat([d_avg, e_avg], dim=1)
+                    final_logits = meta_model(combined_logits)
+                    final_probs = torch.softmax(final_logits, dim=1).cpu().numpy()[0]
+                    
+            predicted_idx = np.argmax(final_probs)
             predicted_class = class_names[predicted_idx]
-            confidence = float(avg_probs[predicted_idx])
+            confidence = float(final_probs[predicted_idx])
 
-            input_size = 384
-            cam_d_res = np.array(Image.fromarray((cam_dense * 255).astype(np.uint8)).resize((input_size, input_size), Image.BILINEAR)) / 255.0
-            cam_e_res = np.array(Image.fromarray((cam_effnet * 255).astype(np.uint8)).resize((input_size, input_size), Image.BILINEAR)) / 255.0
-            cam_ensemble = (cam_d_res + cam_e_res) / 2.0
-            if cam_ensemble.max() > 0:
-                cam_ensemble = cam_ensemble / cam_ensemble.max()
+            # Generate the 10-fold GradCAM
+            input_size = 456
+            
+            # DenseNet CAMs
+            dense_cams = []
+            for gc in dense_gcs:
+                cam, _ = gc.generate(input_tensor.clone(), target_class=predicted_idx)
+                cam_res = np.array(PILImage.fromarray((cam * 255).astype(np.uint8)).resize((input_size, input_size), PILImage.BILINEAR)) / 255.0
+                dense_cams.append(cam_res)
+            avg_dense_cam = np.mean(dense_cams, axis=0)
+            if avg_dense_cam.max() > 0: avg_dense_cam /= avg_dense_cam.max()
 
+            # EfficientNet CAMs
+            effnet_cams = []
+            for gc in effnet_gcs:
+                cam, _ = gc.generate(input_tensor.clone(), target_class=predicted_idx)
+                cam_res = np.array(PILImage.fromarray((cam * 255).astype(np.uint8)).resize((input_size, input_size), PILImage.BILINEAR)) / 255.0
+                effnet_cams.append(cam_res)
+            avg_effnet_cam = np.mean(effnet_cams, axis=0)
+            if avg_effnet_cam.max() > 0: avg_effnet_cam /= avg_effnet_cam.max()
+
+            # Ensemble CAM
+            cam_ensemble = (avg_dense_cam + avg_effnet_cam) / 2.0
+            if cam_ensemble.max() > 0: cam_ensemble /= cam_ensemble.max()
+            
             anatomical_location = get_anatomical_location(cam_ensemble)
 
+            # Display Image Overlay
             display_tensor = transforms.Compose([
                 transforms.Resize((input_size, input_size)),
                 transforms.ToTensor(),
@@ -269,11 +235,19 @@ if uploaded_file is not None:
             heatmap_colors = cm.jet(cam_ensemble)[:, :, :3]
             overlay = np.clip(0.5 * display_img + 0.5 * heatmap_colors, 0, 1)
             
+            # Cleanup hooks
+            for gc in dense_gcs: gc.remove()
+            for gc in effnet_gcs: gc.remove()
+
+            # Individual Probabilities for DataFrame
+            probs_d = torch.softmax(d_avg, dim=1).cpu().numpy()[0]
+            probs_e = torch.softmax(e_avg, dim=1).cpu().numpy()[0]
+
             df = pd.DataFrame({
                 "Class": class_names,
-                "DenseNet-121": [f"{p:.2%}" for p in probs_d],
-                "EfficientNet-B4": [f"{p:.2%}" for p in probs_e],
-                "Ensemble (Average)": [f"{p:.2%}" for p in avg_probs]
+                "DenseNet-121 (5-Fold Avg)": [f"{p:.2%}" for p in probs_d],
+                "EfficientNet-B2 (5-Fold Avg)": [f"{p:.2%}" for p in probs_e],
+                "Meta-Classifier Final": [f"{p:.2%}" for p in final_probs]
             })
 
             # Save to session state
@@ -298,15 +272,15 @@ if uploaded_file is not None:
         else:
             st.success("**Spatial Extraction:** The lungs appear clear. Any minor activations map to standard anatomical structures.")
 
-        st.markdown("### Grad-CAM Attention Heatmap")
+        st.markdown("### 10-Fold Grad-CAM Attention Heatmap")
         st.image(res['overlay'], caption="Ensemble Grad-CAM Overlay", use_container_width=True)
 
         with st.expander("📊 View Detailed Model Breakdown"):
-            st.write("The final prediction is an average of the two individual models:")
+            st.write("The final prediction is driven by the Meta-Classifier aggregating 10 base models:")
             def highlight_max(s):
-                is_max = s == res['df']["Ensemble (Average)"].iloc[res['predicted_idx']]
+                is_max = s == res['df']["Meta-Classifier Final"].iloc[res['predicted_idx']]
                 return ['background-color: #2ECC71' if v else '' for v in is_max]
-            st.dataframe(res['df'].style.apply(highlight_max, subset=['Ensemble (Average)']), use_container_width=True)
+            st.dataframe(res['df'].style.apply(highlight_max, subset=['Meta-Classifier Final']), use_container_width=True)
 
         st.markdown("---")
         
@@ -323,7 +297,7 @@ if uploaded_file is not None:
                         context = "\n\n".join([doc.page_content for doc in docs])
                         
                         prompt = f"""You are an expert AI clinical assistant (Agentic-CDSS).
-A chest X-ray has been analyzed by a deep learning vision ensemble.
+A chest X-ray has been analyzed by a 10-model deep learning vision ensemble.
 - Predicted Condition: {res['predicted_class'].upper()}
 - Confidence: {res['confidence']:.1%}
 - Anatomical Focal Point: {res['anatomical_location']}
@@ -337,7 +311,7 @@ Based ON THESE GUIDELINES ONLY, write a short, professional "Preliminary Clinica
 
 Format the output clearly using Markdown. Be concise and clinical. Do not hallucinate treatments outside the provided guidelines.
 """
-                        model = genai.GenerativeModel('gemini-3.6-flash')
+                        model = genai.GenerativeModel('gemini-1.5-flash')
                         response = model.generate_content(prompt)
                         
                         st.session_state['agent_report'] = response.text
@@ -371,11 +345,11 @@ Format the output clearly using Markdown. Be concise and clinical. Do not halluc
 
 st.sidebar.markdown("""
 ### ℹ️ About the Model
-This AI model takes in a 384x384 pixel chest X-ray and uses a deep learning ensemble to diagnose pneumonia.
+This AI model takes in a 456x456 pixel chest X-ray and uses a 10-model deep learning ensemble to diagnose pneumonia.
 
-**Architecture:**
-- DenseNet-121
-- EfficientNet-B4
-- Probabilistic Averaging
-- Grad-CAM Spatial Coordinates
+**Architecture (Phase 7):**
+- 5 Folds: DenseNet-121
+- 5 Folds: EfficientNet-B2
+- Meta-Classifier Aggregation
+- 10-Fold Averaged Grad-CAM
 """)
